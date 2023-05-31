@@ -1,0 +1,94 @@
+import jax
+import jax.numpy as jnp
+from jax import grad, jit, vmap
+from jax import random, lax
+import jax.nn as nn
+from jax.experimental import stax
+from jax.experimental.stax import Conv, Dense, Flatten, Relu, Softmax
+
+# Load MNIST dataset
+from tensorflow.keras.datasets import mnist
+(train_images, train_labels), (test_images, test_labels) = mnist.load_data()
+
+# Normalize and reshape the data
+train_images = train_images / 255.0
+test_images = test_images / 255.0
+train_images = jnp.expand_dims(train_images, axis=-1)
+test_images = jnp.expand_dims(test_images, axis=-1)
+
+# Define the CNN architecture
+init_random_params, forward_fn = stax.serial(
+    Conv(32, (3, 3), padding='SAME'),
+    Relu,
+    Conv(64, (3, 3), padding='SAME'),
+    Relu,
+    Conv(128, (3, 3), padding='SAME'),
+    Relu,
+    Flatten,
+    Dense(128),
+    Relu,
+    Dense(10),
+    Softmax
+)
+
+# Initialize model parameters
+rng = random.PRNGKey(0)
+_, init_params = init_random_params(rng, (1, 28, 28, 1))
+
+# Define the loss function
+@jit
+def loss(params, images, labels):
+    logits = forward_fn(params, images)
+    return -jnp.mean(jnp.sum(nn.one_hot(labels, 10) * jnp.log(logits), axis=1))
+
+# Define the accuracy function
+@jit
+def accuracy(params, images, labels):
+    predicted_labels = jnp.argmax(forward_fn(params, images), axis=1)
+    return jnp.mean(predicted_labels == labels)
+
+# Define the update function
+@jit
+def update(params, images, labels, learning_rate):
+    grads = grad(loss)(params, images, labels)
+    return [(w - learning_rate * dw, b - learning_rate * db) for (w, b), (dw, db) in zip(params, grads)]
+
+# Training loop
+def train_model(num_epochs, batch_size, learning_rate):
+    num_batches = train_images.shape[0] // batch_size
+    params = init_params
+
+    for epoch in range(num_epochs):
+        loss_val = 0.0
+        acc_val = 0.0
+
+        for batch in range(num_batches):
+            start_idx = batch * batch_size
+            end_idx = start_idx + batch_size
+            batch_images = train_images[start_idx:end_idx]
+            batch_labels = train_labels[start_idx:end_idx]
+
+            params = update(params, batch_images, batch_labels, learning_rate)
+            loss_val += loss(params, batch_images, batch_labels)
+            acc_val += accuracy(params, batch_images, batch_labels)
+
+        avg_loss = loss_val / num_batches
+        avg_acc = acc_val / num_batches
+
+        print(f"Epoch {epoch + 1}/{num_epochs} - loss: {avg_loss:.4f} - accuracy: {avg_acc:.4f}")
+
+    return params
+
+# Test the trained model
+def test_model(params):
+    acc = accuracy(params, test_images, test_labels)
+    print(f"Test accuracy: {acc:.4f}")
+
+# Run the training and testing
+num_epochs = 10
+batch_size = 64
+learning_rate = 0.001
+
+trained_params = train_model(num_epochs, batch_size, learning_rate)
+test_model(trained_params)
+
